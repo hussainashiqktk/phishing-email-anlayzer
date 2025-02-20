@@ -2,10 +2,14 @@ from flask import Flask, request, render_template, jsonify
 import email
 import re
 import os
+import requests
 from email import policy
 from urllib.parse import urlparse
 
 app = Flask(__name__)
+
+# VirusTotal API key (replace with your own)
+VIRUSTOTAL_API_KEY = "4f043d6accf41ec85ebcd5886167aa178d269c3bb4aeab91d8596bfa059f41b3"
 
 # Directory to store uploaded email files temporarily
 UPLOAD_FOLDER = 'uploads'
@@ -18,6 +22,43 @@ def extract_domain(email_address):
     match = re.search(r'@([\w.-]+)', email_address)
     return match.group(1) if match else None
 
+# Function to check URL with VirusTotal
+def check_virustotal(url):
+    try:
+        vt_url = "https://www.virustotal.com/api/v3/urls"
+        headers = {"x-apikey": VIRUSTOTAL_API_KEY}
+        payload = {"url": url}
+        response = requests.post(vt_url, headers=headers, data=payload)
+        if response.status_code == 200:
+            analysis_id = response.json()["data"]["id"]
+            analysis_url = f"https://www.virustotal.com/api/v3/analyses/{analysis_id}"
+            analysis_response = requests.get(analysis_url, headers=headers)
+            if analysis_response.status_code == 200:
+                result = analysis_response.json()["data"]["attributes"]["stats"]
+                return {
+                    "malicious": result.get("malicious", 0),
+                    "suspicious": result.get("suspicious", 0),
+                    "harmless": result.get("harmless", 0)
+                }
+        return {"error": "VirusTotal scan failed"}
+    except Exception as e:
+        return {"error": str(e)}
+
+# Function to check URL with ThreatCrowd
+def check_threatcrowd(url):
+    try:
+        tc_url = f"https://www.threatcrowd.org/searchApi/v2/domain/report/?domain={urlparse(url).netloc}"
+        response = requests.get(tc_url)
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "votes": data.get("votes", 0),
+                "malicious": "Reported" if data.get("votes", 0) < 0 else "Not reported"
+            }
+        return {"error": "ThreatCrowd scan failed"}
+    except Exception as e:
+        return {"error": str(e)}
+
 # Function to parse and analyze the raw email file
 def parse_email(file_path):
     try:
@@ -29,10 +70,10 @@ def parse_email(file_path):
     # Extract headers
     headers = {
         "From": msg.get("From", "Not found"),
-        "Header.From": msg.get("header.from", "Not found"),  # Rarely used, but included for completeness
+        "Header.From": msg.get("header.from", "Not found"),
         "X-Original-Sender": msg.get("X-Original-Sender", "Not found"),
         "X-Original-From": msg.get("X-Original-From", "Not found"),
-        "Received": msg.get_all("Received", ["Not found"])[-1],  # Last Received header
+        "Received": msg.get_all("Received", ["Not found"])[-1],
         "Received-SPF": msg.get("Received-SPF", "Not found"),
         "Authentication-Results": msg.get("Authentication-Results", "Not found")
     }
@@ -61,28 +102,21 @@ def parse_email(file_path):
         if filename:
             attachments.append(filename)
 
-    # Header Analysis for Spoofing
+    # Analysis dictionary
     analysis = {}
-    
-    # 1. Check if "From" matches "Header.From" or "X-Original-Sender"
+
+    # Header Analysis for Spoofing
     from_field = headers["From"]
-    header_from = headers["Header.From"]
-    x_original_sender = headers["X-Original-Sender"]
     from_domain = extract_domain(from_field) if from_field != "Not found" else None
-    
     from_match = (
-        (from_field == header_from or header_from == "Not found") and
-        (from_field == x_original_sender or x_original_sender == "Not found")
+        (from_field == headers["Header.From"] or headers["Header.From"] == "Not found") and
+        (from_field == headers["X-Original-Sender"] or headers["X-Original-Sender"] == "Not found")
     )
     analysis["from_match"] = "Matches" if from_match else "Mismatch detected (potential spoofing)"
 
-    # 2. Check domain of "From" against "X-Original-From" and "Received: from"
-    x_original_from = headers["X-Original-From"]
-    received = headers["Received"]
-    x_original_from_domain = extract_domain(x_original_from) if x_original_from != "Not found" else None
-    received_domain = re.search(r'from\s+[\w.-]+\s+\((.*?)\)', received)
+    x_original_from_domain = extract_domain(headers["X-Original-From"]) if headers["X-Original-From"] != "Not found" else None
+    received_domain = re.search(r'from\s+[\w.-]+\s+\((.*?)\)', headers["Received"])
     received_domain = received_domain.group(1) if received_domain else None
-
     domain_match = True
     if from_domain:
         if x_original_from_domain and from_domain != x_original_from_domain:
@@ -91,31 +125,48 @@ def parse_email(file_path):
             domain_match = False
     analysis["domain_match"] = "Matches" if domain_match else "Mismatch detected (potential spoofing)"
 
-    # 3. Check SPF and DMARC
     spf_status = headers["Received-SPF"]
     auth_results = headers["Authentication-Results"]
     spf_pass = "pass" in spf_status.lower() if spf_status != "Not found" else False
     dmarc_pass = "dmarc=pass" in auth_results.lower() if auth_results != "Not found" else False
-    
     analysis["spf_status"] = "PASS" if spf_pass else "FAIL or Not found"
     analysis["dmarc_status"] = "PASS" if dmarc_pass else "FAIL or Not found"
-
-    # 4. Spoofing conclusion
     analysis["spoofing_verdict"] = (
         "Likely spoofed" if not (from_match and domain_match and spf_pass and dmarc_pass)
         else "No spoofing detected"
     )
 
-    # Basic phishing indicators
+    # URL Analysis
+    url_analysis = {}
+    suspicious_urls = 0
+    for url in urls:
+        vt_result = check_virustotal(url)
+        tc_result = check_threatcrowd(url)
+        is_suspicious = (
+            vt_result.get("malicious", 0) > 0 or
+            vt_result.get("suspicious", 0) > 0 or
+            tc_result.get("votes", 0) < 0
+        )
+        if is_suspicious:
+            suspicious_urls += 1
+        url_analysis[url] = {
+            "VirusTotal": vt_result,
+            "ThreatCrowd": tc_result,
+            "suspicious": is_suspicious
+        }
+    analysis["suspicious_url_count"] = suspicious_urls
+
+    # Basic Phishing Indicators
     analysis["suspicious_headers"] = "Reply-To differs from From" if msg.get("Reply-To") != from_field and msg.get("Reply-To") else "No header anomalies"
     analysis["url_count"] = len(urls)
     analysis["attachment_count"] = len(attachments)
-    analysis["potential_phishing"] = "Possible phishing" if urls or attachments else "No obvious phishing signs"
+    analysis["potential_phishing"] = "Possible phishing" if urls or attachments or suspicious_urls > 0 else "No obvious phishing signs"
 
     return {
         "headers": headers,
         "body_preview": body[:500] + "..." if len(body) > 500 else body,
         "urls": urls,
+        "url_analysis": url_analysis,
         "attachments": attachments,
         "analysis": analysis
     }
