@@ -8,6 +8,8 @@
         body { font-family: Arial, sans-serif; margin: 20px; }
         pre { background-color: #f4f4f4; padding: 10px; border-radius: 5px; }
         .error { color: red; }
+        .spoofed { color: red; font-weight: bold; }
+        .safe { color: green; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -33,6 +35,7 @@
             if (result.error) {
                 resultDiv.innerHTML = `<p class="error">Error: ${result.error}</p>`;
             } else {
+                const spoofClass = result.analysis.spoofing_verdict.includes("spoofed") ? "spoofed" : "safe";
                 resultDiv.innerHTML = `
                     <h2>Analysis Result</h2>
                     <h3>Headers</h3>
@@ -43,8 +46,21 @@
                     <pre>${JSON.stringify(result.urls, null, 2)}</pre>
                     <h3>Attachments</h3>
                     <pre>${JSON.stringify(result.attachments, null, 2)}</pre>
-                    <h3>Basic Analysis</h3>
-                    <pre>${JSON.stringify(result.analysis, null, 2)}</pre>
+                    <h3>Header Analysis</h3>
+                    <pre>
+From Match: ${result.analysis.from_match}
+Domain Match: ${result.analysis.domain_match}
+SPF Status: ${result.analysis.spf_status}
+DMARC Status: ${result.analysis.dmarc_status}
+Spoofing Verdict: <span class="${spoofClass}">${result.analysis.spoofing_verdict}</span>
+                    </pre>
+                    <h3>Basic Phishing Analysis</h3>
+                    <pre>${JSON.stringify({
+                        suspicious_headers: result.analysis.suspicious_headers,
+                        url_count: result.analysis.url_count,
+                        attachment_count: result.analysis.attachment_count,
+                        potential_phishing: result.analysis.potential_phishing
+                    }, null, 2)}</pre>
                 `;
             }
         });
