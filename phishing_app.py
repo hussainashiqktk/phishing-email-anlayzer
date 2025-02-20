@@ -5,11 +5,20 @@ import os
 import requests
 from email import policy
 from urllib.parse import urlparse
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 app = Flask(__name__)
 
-# VirusTotal API key (replace with your own)
-VIRUSTOTAL_API_KEY = "4f043d6accf41ec85ebcd5886167aa178d269c3bb4aeab91d8596bfa059f41b3"
+# API keys from environment variables
+VIRUSTOTAL_API_KEY = os.getenv("VIRUSTOTAL_API_KEY")
+ABUSEIPDB_API_KEY = os.getenv("ABUSEIPDB_API_KEY")
+
+# Check if API keys are loaded
+if not VIRUSTOTAL_API_KEY or not ABUSEIPDB_API_KEY:
+    raise ValueError("API keys not found in .env file. Please set VIRUSTOTAL_API_KEY and ABUSEIPDB_API_KEY.")
 
 # Directory to store uploaded email files temporarily
 UPLOAD_FOLDER = 'uploads'
@@ -21,6 +30,18 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 def extract_domain(email_address):
     match = re.search(r'@([\w.-]+)', email_address)
     return match.group(1) if match else None
+
+# Function to extract IPs from Received headers
+def extract_ips_from_headers(headers):
+    ip_pattern = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
+    ips = []
+    for received in headers.get_all("Received", []):
+        matches = ip_pattern.findall(received)
+        for ip in matches:
+            if not (ip.startswith('192.168.') or ip.startswith('10.') or 
+                    ip.startswith('172.') and 16 <= int(ip.split('.')[1]) <= 31):
+                ips.append(ip)
+    return list(set(ips))
 
 # Function to check URL with VirusTotal
 def check_virustotal(url):
@@ -59,6 +80,24 @@ def check_threatcrowd(url):
     except Exception as e:
         return {"error": str(e)}
 
+# Function to check IP with AbuseIPDB
+def check_abuseipdb(ip):
+    try:
+        abuse_url = f"https://api.abuseipdb.com/api/v2/check?ipAddress={ip}&maxAgeInDays=90"
+        headers = {"Key": ABUSEIPDB_API_KEY, "Accept": "application/json"}
+        response = requests.get(abuse_url, headers=headers)
+        if response.status_code == 200:
+            data = response.json()["data"]
+            return {
+                "abuse_confidence_score": data.get("abuseConfidenceScore", 0),
+                "total_reports": data.get("totalReports", 0),
+                "country": data.get("countryCode", "Unknown"),
+                "is_whitelisted": data.get("isWhitelisted", False)
+            }
+        return {"error": "AbuseIPDB scan failed"}
+    except Exception as e:
+        return {"error": str(e)}
+
 # Function to parse and analyze the raw email file
 def parse_email(file_path):
     try:
@@ -77,6 +116,9 @@ def parse_email(file_path):
         "Received-SPF": msg.get("Received-SPF", "Not found"),
         "Authentication-Results": msg.get("Authentication-Results", "Not found")
     }
+
+    # Extract IPs from all Received headers
+    received_ips = extract_ips_from_headers(msg)
 
     # Extract body and URLs
     body = ""
@@ -156,17 +198,33 @@ def parse_email(file_path):
         }
     analysis["suspicious_url_count"] = suspicious_urls
 
+    # IP Analysis with AbuseIPDB
+    ip_analysis = {}
+    suspicious_ips = 0
+    for ip in received_ips:
+        abuse_result = check_abuseipdb(ip)
+        is_suspicious = abuse_result.get("abuse_confidence_score", 0) > 25
+        if is_suspicious:
+            suspicious_ips += 1
+        ip_analysis[ip] = {
+            "AbuseIPDB": abuse_result,
+            "suspicious": is_suspicious
+        }
+    analysis["suspicious_ip_count"] = suspicious_ips
+
     # Basic Phishing Indicators
     analysis["suspicious_headers"] = "Reply-To differs from From" if msg.get("Reply-To") != from_field and msg.get("Reply-To") else "No header anomalies"
     analysis["url_count"] = len(urls)
     analysis["attachment_count"] = len(attachments)
-    analysis["potential_phishing"] = "Possible phishing" if urls or attachments or suspicious_urls > 0 else "No obvious phishing signs"
+    analysis["potential_phishing"] = "Possible phishing" if urls or attachments or suspicious_urls > 0 or suspicious_ips > 0 else "No obvious phishing signs"
 
     return {
         "headers": headers,
         "body_preview": body[:500] + "..." if len(body) > 500 else body,
         "urls": urls,
         "url_analysis": url_analysis,
+        "received_ips": received_ips,
+        "ip_analysis": ip_analysis,
         "attachments": attachments,
         "analysis": analysis
     }

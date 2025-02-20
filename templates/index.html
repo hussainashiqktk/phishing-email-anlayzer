@@ -44,6 +44,7 @@
             } else {
                 const spoofClass = result.analysis.spoofing_verdict.includes("spoofed") ? "spoofed" : "safe";
                 const phishingClass = result.analysis.potential_phishing.includes("Possible") ? "suspicious" : "safe";
+
                 let urlAnalysisHtml = '';
                 for (const [url, analysis] of Object.entries(result.url_analysis)) {
                     const suspiciousClass = analysis.suspicious ? "suspicious" : "safe";
@@ -57,6 +58,18 @@ Suspicious: <span class="${suspiciousClass}">${analysis.suspicious ? "Yes" : "No
                     `;
                 }
 
+                let ipAnalysisHtml = '';
+                for (const [ip, analysis] of Object.entries(result.ip_analysis)) {
+                    const suspiciousClass = analysis.suspicious ? "suspicious" : "safe";
+                    ipAnalysisHtml += `
+                        <h5>IP: ${ip}</h5>
+                        <pre>
+AbuseIPDB: ${JSON.stringify(analysis.AbuseIPDB, null, 2)}
+Suspicious: <span class="${suspiciousClass}">${analysis.suspicious ? "Yes" : "No"}</span>
+                        </pre>
+                    `;
+                }
+
                 resultDiv.innerHTML = `
                     <div class="card">
                         <div class="card-header"><h2>Analysis Result</h2></div>
@@ -65,6 +78,10 @@ Suspicious: <span class="${suspiciousClass}">${analysis.suspicious ? "Yes" : "No
                             <pre>${JSON.stringify(result.headers, null, 2)}</pre>
                             <h3>Body Preview</h3>
                             <pre>${result.body_preview}</pre>
+                            <h3>Received IPs</h3>
+                            <pre>${result.received_ips.length ? JSON.stringify(result.received_ips, null, 2) : "None found"}</pre>
+                            <h3>IP Analysis</h3>
+                            ${ipAnalysisHtml || '<p>No IPs to analyze</p>'}
                             <h3>URLs</h3>
                             <pre>${result.urls.length ? JSON.stringify(result.urls, null, 2) : "None found"}</pre>
                             <h3>URL Analysis</h3>
@@ -84,6 +101,8 @@ Phishing Indicators:
   Suspicious Headers: ${result.analysis.suspicious_headers}
   Total URLs: ${result.analysis.url_count}
   Suspicious URLs: ${result.analysis.suspicious_url_count}
+  Total IPs: ${result.received_ips.length}
+  Suspicious IPs: ${result.analysis.suspicious_ip_count}
   Attachments: ${result.analysis.attachment_count}
   Phishing Verdict: <span class="${phishingClass}">${result.analysis.potential_phishing}</span>
                             </pre>
