@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Email Phishing Analysis</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        pre { background-color: #f4f4f4; padding: 10px; border-radius: 5px; }
+        .error { color: red; }
+    </style>
+</head>
+<body>
+    <h1>Email Phishing Analysis</h1>
+    <p>Upload a raw email file (.eml) for analysis:</p>
+    <form id="uploadForm" enctype="multipart/form-data">
+        <input type="file" name="file" accept=".eml" required>
+        <button type="submit">Analyze</button>
+    </form>
+    <div id="result"></div>
+
+    <script>
+        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const response = await fetch('/upload', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await response.json();
+            const resultDiv = document.getElementById('result');
+            
+            if (result.error) {
+                resultDiv.innerHTML = `<p class="error">Error: ${result.error}</p>`;
+            } else {
+                resultDiv.innerHTML = `
+                    <h2>Analysis Result</h2>
+                    <h3>Headers</h3>
+                    <pre>${JSON.stringify(result.headers, null, 2)}</pre>
+                    <h3>Body Preview</h3>
+                    <pre>${result.body_preview}</pre>
+                    <h3>URLs</h3>
+                    <pre>${JSON.stringify(result.urls, null, 2)}</pre>
+                    <h3>Attachments</h3>
+                    <pre>${JSON.stringify(result.attachments, null, 2)}</pre>
+                    <h3>Basic Analysis</h3>
+                    <pre>${JSON.stringify(result.analysis, null, 2)}</pre>
+                `;
+            }
+        });
+    </script>
+</body>
+</html>
